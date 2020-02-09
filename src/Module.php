@@ -22,7 +22,6 @@ use Laminas\Db\TableGateway\TableGateway;
 use Laminas\Db\Adapter\AdapterInterface;
 use Laminas\EventManager\EventInterface as Event;
 use Laminas\ModuleManager\ModuleManager;
-use OnePlace\Basket\Wordpress\Controller\WordpressController;
 use OnePlace\Basket\Model\BasketTable;
 
 
@@ -64,13 +63,13 @@ class Module {
         return [
             'factories' => [
                 # Plugin Example Controller
-                Controller\WordpressController::class => function($container) {
+                Controller\ApiController::class => function($container) {
                     $oDbAdapter = $container->get(AdapterInterface::class);
                     $tableGateway = $container->get(BasketTable::class);
 
                     # hook start
                     # hook end
-                    return new Controller\WordpressController(
+                    return new Controller\ApiController(
                         $oDbAdapter,
                         $tableGateway,
                         $container

@@ -32,7 +32,7 @@ return [
                         'id'     => '[0-9]+',
                     ],
                     'defaults' => [
-                        'controller' => Controller\WordpressController::class,
+                        'controller' => Controller\ApiController::class,
                         'action'     => 'index',
                     ],
                 ],

@@ -19,11 +19,12 @@ namespace OnePlace\Basket\Wordpress\Controller;
 
 use Application\Controller\CoreEntityController;
 use Application\Model\CoreEntityModel;
+use http\Exception\RuntimeException;
 use OnePlace\Basket\Model\BasketTable;
 use Laminas\View\Model\ViewModel;
 use Laminas\Db\Adapter\AdapterInterface;
 
-class WordpressController extends CoreEntityController {
+class ApiController extends CoreEntityController {
     /**
      * Basket Table Object
      *
@@ -55,6 +56,28 @@ class WordpressController extends CoreEntityController {
         $this->layout('layout/json');
 
         echo 'add item to basket - open basket - and so on ...';
+
+        return false;
+    }
+
+    public function getAction() {
+        $this->layout('layout/json');
+
+        $sShopSessionID = $_REQUEST['shop_session_id'];
+
+        try {
+            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
+            if($oBasketExists->shop_session_id != $sShopSessionID) {
+                throw new \RuntimeException('Not really the same basket...');
+            }
+        } catch(\RuntimeException $e) {
+            $aResponse = ['state'=>'success','message'=>'Your Basket is empty'];
+            echo json_encode($aResponse);
+            return false;
+        }
+
+        $aResponse = ['state'=>'success','message'=>'open basket found','oBasket'=>$oBasketExists];
+        echo json_encode($aResponse);
 
         return false;
     }
