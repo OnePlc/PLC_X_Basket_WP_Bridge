@@ -22,7 +22,7 @@
   },
   "autoload": {
     "psr-4": {
-      "OnePlace\\Basket\\Wordpress\\": "src/"
+      "OnePlace\\Basket\\WP\\Bridge\\": "src/"
     }
   },
   "autoload-dev": {
@@ -46,7 +46,7 @@
   },
   "extra": {
     "zf": {
-      "module": "OnePlace\\Basket\\Wordpress"
+      "module": "OnePlace\\Basket\\WP\\Bridge"
     }
   }
 }

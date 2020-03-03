@@ -15,7 +15,7 @@
 
 declare(strict_types=1);
 
-namespace OnePlace\Basket\Wordpress\Controller;
+namespace OnePlace\Basket\WP\Bridge\Controller;
 
 use Application\Controller\CoreEntityController;
 use Application\Model\CoreEntityModel;

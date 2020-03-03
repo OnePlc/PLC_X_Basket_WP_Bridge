@@ -13,7 +13,7 @@
  * @since 1.0.0
  */
 
-namespace OnePlace\Basket\Wordpress;
+namespace OnePlace\Basket\WP\Bridge;
 
 use Laminas\Router\Http\Literal;
 use Laminas\Router\Http\Segment;
@@ -23,7 +23,7 @@ return [
     # Contact Module - Routes
     'router' => [
         'routes' => [
-            'basket-wordpress' => [
+            'basket-wp-bridge' => [
                 'type'    => Segment::class,
                 'options' => [
                     'route' => '/basket/wordpress[/:action[/:id]]',
@@ -34,6 +34,20 @@ return [
                     'defaults' => [
                         'controller' => Controller\ApiController::class,
                         'action'     => 'index',
+                    ],
+                ],
+            ],
+            'basket-wp-bridge-setup' => [
+                'type'    => Segment::class,
+                'options' => [
+                    'route' => '/basket/wordpress/setup[/:action[/:id]]',
+                    'constraints' => [
+                        'action' => '[a-zA-Z][a-zA-Z0-9_-]*',
+                        'id'     => '[0-9]+',
+                    ],
+                    'defaults' => [
+                        'controller' => Controller\InstallController::class,
+                        'action'     => 'checkdb',
                     ],
                 ],
             ],

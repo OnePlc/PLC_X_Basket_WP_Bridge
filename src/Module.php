@@ -13,7 +13,7 @@
  * @since 1.0.0
  */
 
-namespace OnePlace\Basket\Wordpress;
+namespace OnePlace\Basket\WP\Bridge;
 
 use Application\Controller\CoreEntityController;
 use Laminas\Mvc\MvcEvent;
@@ -70,6 +70,18 @@ class Module {
                     # hook start
                     # hook end
                     return new Controller\ApiController(
+                        $oDbAdapter,
+                        $tableGateway,
+                        $container
+                    );
+                },
+                Controller\InstallController::class => function($container) {
+                    $oDbAdapter = $container->get(AdapterInterface::class);
+                    $tableGateway = $container->get(BasketTable::class);
+
+                    # hook start
+                    # hook end
+                    return new Controller\InstallController(
                         $oDbAdapter,
                         $tableGateway,
                         $container
