@@ -59,22 +59,37 @@ class ApiController extends CoreEntityController {
         }
     }
 
+    /**
+     * Add New Item to Basket
+     *
+     * Adds New Item to Basket. Creates Basket
+     * if no open Basket is found for the provided
+     * session_id
+     *
+     * @return bool JSON - no viewfile
+     * @since 1.0.0
+     */
     public function addAction() {
         $this->layout('layout/json');
 
+        # Get Data of Item that should be added
         $iItemID = $_REQUEST['shop_item_id'];
         $sItemType = $_REQUEST['shop_item_type'];
         $fItemAmount = $_REQUEST['shop_item_amount'];
         $sShopSessionID = $_REQUEST['shop_session_id'];
 
+        # Check if there is already an open basket for this session
         $oBasket = false;
         try {
             $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
             if($oBasketExists->shop_session_id != $sShopSessionID) {
                 throw new \RuntimeException('Not really the same basket...');
             }
+            # yes there is
             $oBasket = $oBasketExists;
         } catch(\RuntimeException $e) {
+            # there is no basket - lets create one
+
             # Get State Tag
             $oStateTag = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'state']);
             if(count($oStateTag) > 0) {
@@ -87,10 +102,11 @@ class ApiController extends CoreEntityController {
                     'tag_value' => 'new',
                 ]);
 
+                # only proceed of we have state tag present
                 if(count($oNewState) > 0) {
                     $oNewState = $oNewState->current();
 
-                    # basket is empty - create it
+                    # Generate new open basket
                     $oBasket = $this->oTableGateway->generateNew();
                     $aBasketData = [
                         'state_idfs' => $oNewState->Entitytag_ID,
@@ -111,16 +127,18 @@ class ApiController extends CoreEntityController {
 
                     $oBasket->exchangeArray($aBasketData);
 
+                    # Save Basket to DB
                     $iBasketID = $this->oTableGateway->saveSingle($oBasket);
                     $oBasket = $this->oTableGateway->getSingle($iBasketID);
                 }
             }
         }
 
+        # Only proceed if basket is present
         if($oBasket) {
             $oBasketPosTbl = CoreEntityController::$oServiceManager->get(PositionTable::class);
+            # generate new basket position
             $oPos = $oBasketPosTbl->generateNew();
-
             $aPosData = [
                 'basket_idfs' => $oBasket->getID(),
                 'article_idfs' => $iItemID,
@@ -134,18 +152,28 @@ class ApiController extends CoreEntityController {
                 'modified_date' => date('Y-m-d H:i:s',time()),
             ];
 
-            var_dump($aPosData);
-
+            # save to database
             $oPos->exchangeArray($aPosData);
             $oBasketPosTbl->saveSingle($oPos);
         }
 
+        # json response for api
         $aResponse = ['state'=>'success','message'=> $fItemAmount.' items added to basket','oBasket'=>$oBasket];
         echo json_encode($aResponse);
 
         return false;
     }
 
+    /**
+     * Get open basket for session
+     *
+     * Loads Basket by session_id.
+     * If found, it also checks for positions
+     * and returns them.
+     *
+     * @return bool
+     * @since 1.0.0
+     */
     public function getAction() {
         $this->layout('layout/json');
 
@@ -162,11 +190,13 @@ class ApiController extends CoreEntityController {
             return false;
         }
 
+        # we have a basket - lets check for positions
         $aPositions = [];
         $oPosTbl = CoreEntityController::$oServiceManager->get(PositionTable::class);
         $oArticleTbl = CoreEntityController::$oServiceManager->get(ArticleTable::class);
         $oVariantTbl = CoreEntityController::$oServiceManager->get(VariantTable::class);
 
+        # attach positions
         $oBasketPositions = $oPosTbl->fetchAll(false,['basket_idfs' => $oBasketExists->getID()]);
         if(count($oBasketPositions) > 0) {
             foreach($oBasketPositions as $oPos) {
@@ -187,11 +217,20 @@ class ApiController extends CoreEntityController {
         return false;
     }
 
+    /**
+     * Start Checkout (Address Form)
+     *
+     * Shows Address Form for Checkout
+     *
+     * @return bool
+     * @since 1.0.0
+     */
     public function checkoutAction() {
         $this->layout('layout/json');
 
         $sShopSessionID = $_REQUEST['shop_session_id'];
 
+        # check if we have delivery methods in database
         $oTagDelMet = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'deliverymethod']);
         $aDeliveryMethods = [];
         if(count($oTagDelMet) > 0) {
@@ -208,6 +247,7 @@ class ApiController extends CoreEntityController {
             }
         }
 
+        # get open basket
         try {
             $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
             if($oBasketExists->shop_session_id != $sShopSessionID) {
@@ -222,12 +262,14 @@ class ApiController extends CoreEntityController {
         # Update Basket Last Modified Date
         $this->oTableGateway->updateAttribute('modified_date',date('Y-m-d H:i:s',time()),'Basket_ID',$oBasketExists->getID());
 
+        # if there is already a contact attached - try to load it
         if($oBasketExists->contact_idfs != 0) {
             $oContactTbl = CoreEntityController::$oServiceManager->get(ContactTable::class);
             $oAddressTbl = CoreEntityController::$oServiceManager->get(AddressTable::class);
             try {
                 $oContactExists = $oContactTbl->getSingle($oBasketExists->contact_idfs);
             } catch (\RuntimeException $e) {
+                # this should actually not happen at all
                 $this->aPluginTables['basket-step']->insert([
                     'basket_idfs' => $oBasketExists->getID(),
                     'label' => 'Checkout started',
@@ -241,9 +283,11 @@ class ApiController extends CoreEntityController {
                 return false;
             }
 
+            # get contact address
             $oAddress = $oAddressTbl->getSingle($oContactExists->getID(),'contact_idfs');
             $oContactExists->address = $oAddress;
 
+            # add step for repeat
             $this->aPluginTables['basket-step']->insert([
                 'basket_idfs' => $oBasketExists->getID(),
                 'label' => 'Checkout repeat',
@@ -257,6 +301,7 @@ class ApiController extends CoreEntityController {
 
             return false;
         } else {
+            # should be first time we start checkout or at least no data was provided in further tries
             $this->aPluginTables['basket-step']->insert([
                 'basket_idfs' => $oBasketExists->getID(),
                 'label' => 'Checkout started',
@@ -271,6 +316,16 @@ class ApiController extends CoreEntityController {
         }
     }
 
+    /**
+     * Select Payment Method Form
+     *
+     * Shows Payment Method Form and
+     * Saves Contact Data from last
+     * step if found.
+     *
+     * @return bool
+     * @since 1.0.0
+     */
     public function paymentAction() {
         $this->layout('layout/json');
 
@@ -291,8 +346,9 @@ class ApiController extends CoreEntityController {
         $oAddressTbl = CoreEntityController::$oServiceManager->get(AddressTable::class);
 
         $aContactData = [];
+        # check if we come from last step (address form)
         if(isset($_REQUEST['email'])) {
-
+            # payment selection init
             $this->aPluginTables['basket-step']->insert([
                 'basket_idfs' => $oBasketExists->getID(),
                 'label' => 'Payment Selection',
@@ -310,11 +366,13 @@ class ApiController extends CoreEntityController {
             try {
                 $oContactExists = $oContactTbl->getSingle($aContactData['email_private'],'email_private');
             } catch(\RuntimeException $e) {
+                # create a new contact
                 $oNewContact = $oContactTbl->generateNew();
                 $oNewContact->exchangeArray($aContactData);
                 $iContactID = $oContactTbl->saveSingle($oNewContact);
                 $oContactExists = $oContactTbl->getSingle($iContactID);
 
+                # create a new address for contact
                 $aAddressData = [
                     'contact_idfs' => $iContactID,
                     'street' => $_REQUEST['street'],
@@ -381,7 +439,7 @@ class ApiController extends CoreEntityController {
             }
         }
 
-
+        # generate JSON response for api
         $aResponse = [
             'state' => 'success',
             'message' => 'contact saved',
@@ -395,6 +453,12 @@ class ApiController extends CoreEntityController {
         return false;
     }
 
+    /**
+     * Show Order Confirmation Page
+     *
+     * @return bool
+     * @since 1.0.0
+     */
     public function confirmAction() {
         $this->layout('layout/json');
 
