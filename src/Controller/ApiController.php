@@ -36,6 +36,7 @@ class ApiController extends CoreEntityController {
      * @since 1.0.0
      */
     protected $oTableGateway;
+    protected $aPluginTables;
 
     /**
      * BasketController constructor.
@@ -44,10 +45,11 @@ class ApiController extends CoreEntityController {
      * @param BasketTable $oTableGateway
      * @since 1.0.0
      */
-    public function __construct(AdapterInterface $oDbAdapter,BasketTable $oTableGateway,$oServiceManager) {
+    public function __construct(AdapterInterface $oDbAdapter,BasketTable $oTableGateway,$oServiceManager,$aPluginTables = []) {
         $this->oTableGateway = $oTableGateway;
         $this->sSingleForm = 'basket-single';
         parent::__construct($oDbAdapter,$oTableGateway,$oServiceManager);
+        $this->aPluginTables = $aPluginTables;
 
         if($oTableGateway) {
             # Attach TableGateway to Entity Models
@@ -132,6 +134,8 @@ class ApiController extends CoreEntityController {
                 'modified_date' => date('Y-m-d H:i:s',time()),
             ];
 
+            var_dump($aPosData);
+
             $oPos->exchangeArray($aPosData);
             $oBasketPosTbl->saveSingle($oPos);
         }
@@ -215,12 +219,22 @@ class ApiController extends CoreEntityController {
             return false;
         }
 
+        # Update Basket Last Modified Date
+        $this->oTableGateway->updateAttribute('modified_date',date('Y-m-d H:i:s',time()),'Basket_ID',$oBasketExists->getID());
+
         if($oBasketExists->contact_idfs != 0) {
             $oContactTbl = CoreEntityController::$oServiceManager->get(ContactTable::class);
             $oAddressTbl = CoreEntityController::$oServiceManager->get(AddressTable::class);
             try {
                 $oContactExists = $oContactTbl->getSingle($oBasketExists->contact_idfs);
             } catch (\RuntimeException $e) {
+                $this->aPluginTables['basket-step']->insert([
+                    'basket_idfs' => $oBasketExists->getID(),
+                    'label' => 'Checkout started',
+                    'step_key' => 'checkout_init',
+                    'comment' => '(contact not found) - init again',
+                    'date_created' => date('Y-m-d H:i:s',time()),
+                ]);
                 $aResponse = ['state' => 'success', 'message' => 'checkout started', 'basket' => $oBasketExists,'deliverymethods' => $aDeliveryMethods];
                 echo json_encode($aResponse);
 
@@ -230,11 +244,26 @@ class ApiController extends CoreEntityController {
             $oAddress = $oAddressTbl->getSingle($oContactExists->getID(),'contact_idfs');
             $oContactExists->address = $oAddress;
 
+            $this->aPluginTables['basket-step']->insert([
+                'basket_idfs' => $oBasketExists->getID(),
+                'label' => 'Checkout repeat',
+                'step_key' => 'checkout_repeat',
+                'comment' => '',
+                'date_created' => date('Y-m-d H:i:s',time()),
+            ]);
+
             $aResponse = ['state'=>'success','message'=>'checkout started again','basket'=>$oBasketExists,'contact'=>$oContactExists,'deliverymethods' => $aDeliveryMethods];
             echo json_encode($aResponse);
 
             return false;
         } else {
+            $this->aPluginTables['basket-step']->insert([
+                'basket_idfs' => $oBasketExists->getID(),
+                'label' => 'Checkout started',
+                'step_key' => 'checkout_init',
+                'comment' => '',
+                'date_created' => date('Y-m-d H:i:s',time()),
+            ]);
             $aResponse = ['state' => 'success', 'message' => 'checkout started', 'basket' => $oBasketExists,'deliverymethods' => $aDeliveryMethods];
             echo json_encode($aResponse);
 
@@ -263,6 +292,15 @@ class ApiController extends CoreEntityController {
 
         $aContactData = [];
         if(isset($_REQUEST['email'])) {
+
+            $this->aPluginTables['basket-step']->insert([
+                'basket_idfs' => $oBasketExists->getID(),
+                'label' => 'Payment Selection',
+                'step_key' => 'payselect_init',
+                'comment' => '',
+                'date_created' => date('Y-m-d H:i:s',time()),
+            ]);
+
             $aContactData['email_private'] = $_REQUEST['email'];
             $aContactData['firstname'] = $_REQUEST['firstname'];
             $aContactData['lastname'] = $_REQUEST['lastname'];
@@ -322,17 +360,27 @@ class ApiController extends CoreEntityController {
          * Load Payment Method
          */
         $aPay = ['id' => 0,'label' => '-','icon' => ''];
-        $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
-            'Entitytag_ID' => $oBasketExists->paymentmethod_idfs,
-        ]);
-        if(count($oPaymentMethod) > 0) {
-            $oPaymentMethod = $oPaymentMethod->current();
-            $aPay = [
-                'id' => $oPaymentMethod->Entitytag_ID,
-                'label' => $oPaymentMethod->tag_value,
-                'icon' => $oPaymentMethod->tag_icon
-            ];
+        if($oBasketExists->paymentmethod_idfs != 0) {
+            $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'Entitytag_ID' => $oBasketExists->paymentmethod_idfs,
+            ]);
+            if(count($oPaymentMethod) > 0) {
+                $oPaymentMethod = $oPaymentMethod->current();
+                $aPay = [
+                    'id' => $oPaymentMethod->Entitytag_ID,
+                    'label' => $oPaymentMethod->tag_value,
+                    'icon' => $oPaymentMethod->tag_icon
+                ];
+                $this->aPluginTables['basket-step']->insert([
+                    'basket_idfs' => $oBasketExists->getID(),
+                    'label' => 'Payment Selection',
+                    'step_key' => 'payselect_repeat',
+                    'comment' => 'Current Method '.$oPaymentMethod->tag_value,
+                    'date_created' => date('Y-m-d H:i:s',time()),
+                ]);
+            }
         }
+
 
         $aResponse = [
             'state' => 'success',
@@ -389,23 +437,27 @@ class ApiController extends CoreEntityController {
         /**
          * Update Payment Method
          */
-        $iPaymentMethodID = $_REQUEST['paymentmethod'];
-        $this->oTableGateway->updateAttribute('paymentmethod_idfs',$iPaymentMethodID,'Basket_ID',$oBasketExists->getID());
-
+        $iPaymentMethodID = $oBasketExists->paymentmethod_idfs;
+        if(isset($_REQUEST['paymentmethod'])) {
+            $iPaymentMethodID = $_REQUEST['paymentmethod'];
+            $this->oTableGateway->updateAttribute('paymentmethod_idfs', $iPaymentMethodID, 'Basket_ID', $oBasketExists->getID());
+        }
         /**
          * Load Payment Method
          */
         $aPay = ['id' => 0,'label' => '-','icon' => ''];
-        $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
-            'Entitytag_ID' => $oBasketExists->paymentmethod_idfs,
-        ]);
-        if(count($oPaymentMethod) > 0) {
-            $oPaymentMethod = $oPaymentMethod->current();
-            $aPay = [
-                'id' => $oPaymentMethod->Entitytag_ID,
-                'label' => $oPaymentMethod->tag_value,
-                'icon' => $oPaymentMethod->tag_icon
-            ];
+        if($iPaymentMethodID != 0) {
+            $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'Entitytag_ID' => $iPaymentMethodID,
+            ]);
+            if (count($oPaymentMethod) > 0) {
+                $oPaymentMethod = $oPaymentMethod->current();
+                $aPay = [
+                    'id' => $oPaymentMethod->Entitytag_ID,
+                    'label' => $oPaymentMethod->tag_value,
+                    'icon' => $oPaymentMethod->tag_icon
+                ];
+            }
         }
 
         /**
@@ -443,6 +495,14 @@ class ApiController extends CoreEntityController {
                 $aPositions[] = $oPos;
             }
         }
+
+        $this->aPluginTables['basket-step']->insert([
+            'basket_idfs' => $oBasketExists->getID(),
+            'label' => 'Confirm Order',
+            'step_key' => 'confirm_order',
+            'comment' => 'Payment Method '.$aPay['label'].', Delivery Method: '.$aDelivery['label'].', Positions: '.count($aPositions),
+            'date_created' => date('Y-m-d H:i:s',time()),
+        ]);
 
         $aResponse = [
             'state' => 'success',

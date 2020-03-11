@@ -46,13 +46,13 @@ class Module {
     public function onBootstrap(Event $e)
     {
         // This method is called once the MVC bootstrapping is complete
-        //$application = $e->getApplication();
-        //$container    = $application->getServiceManager();
-        //$oDbAdapter = $container->get(AdapterInterface::class);
-        //$tableGateway = $container->get(BasketTable::class);
+        $application = $e->getApplication();
+        $container    = $application->getServiceManager();
+        $oDbAdapter = $container->get(AdapterInterface::class);
+        $tableGateway = $container->get(BasketTable::class);
 
         # Register Filter Plugin Hook
-        //CoreEntityController::addHook('contact-view-before',(object)['sFunction'=>'attachHistoryForm','oItem'=>new HistoryController($oDbAdapter,$tableGateway,$container)]);
+        CoreEntityController::addHook('basket-view-before',(object)['sFunction'=>'attachBasketSteps','oItem'=>new Controller\PluginController($oDbAdapter,$tableGateway,$container)]);
         //CoreEntityController::addHook('contacthistory-add-before-save',(object)['sFunction'=>'attachHistoryToContact','oItem'=>new HistoryController($oDbAdapter,$tableGateway,$container)]);
     }
 
@@ -66,13 +66,15 @@ class Module {
                 Controller\ApiController::class => function($container) {
                     $oDbAdapter = $container->get(AdapterInterface::class);
                     $tableGateway = $container->get(BasketTable::class);
+                    $oBasketStepTbl = new TableGateway('basket_step', $oDbAdapter);
 
                     # hook start
                     # hook end
                     return new Controller\ApiController(
                         $oDbAdapter,
                         $tableGateway,
-                        $container
+                        $container,
+                        ['basket-step' => $oBasketStepTbl]
                     );
                 },
                 Controller\InstallController::class => function($container) {
@@ -85,6 +87,19 @@ class Module {
                         $oDbAdapter,
                         $tableGateway,
                         $container
+                    );
+                },
+                Controller\PluginController::class => function($container) {
+                    $oDbAdapter = $container->get(AdapterInterface::class);
+                    $tableGateway = $container->get(BasketTable::class);
+
+                    # hook start
+                    # hook end
+                    return new Controller\PluginController(
+                        $oDbAdapter,
+                        $tableGateway,
+                        $container,
+                        []
                     );
                 },
             ],

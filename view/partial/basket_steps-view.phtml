@@ -1,0 +1,53 @@
+<?php
+# Only show partial if data is set
+if(array_key_exists('basket_steps',$this->aPartialData)) {
+    # add address form fields
+    $aSteps = $this->aPartialData['basket_steps']['aSteps'];
+
+    if(count($aSteps) == 0) { ?>
+        <div class="alert alert-info px-2 py-2">
+            <?=$this->translate('No steps yet')?>
+        </div>
+    <?php } else { ?>
+        <ul class="list-group">
+            <li class="list-group-item">
+                <div class="row">
+                    <div class="col-md-2">
+                        <b><?=$this->translate('Date')?></b>
+                    </div>
+                    <div class="col-md-3">
+                        <b><?=$this->translate('Step')?></b>
+                    </div>
+                    <div class="col-md-3">
+                        <b><?=$this->translate('Comment')?></b>
+                    </div>
+                </div>
+            </li>
+            <?php
+            foreach($aSteps as $oStep) { ?>
+                <li class="list-group-item">
+                    <div class="row">
+                        <div class="col-md-2">
+                            <?=date('d.m.Y H:i',strtotime($oStep->date_created))?>
+                        </div>
+                        <div class="col-md-3">
+                            <?=$oStep->label?>
+                        </div>
+                        <div class="col-md-3">
+                            <?=$oStep->comment?>
+                        </div>
+                    </div>
+                </li>
+                <?php
+            }
+            ?>
+        </ul>
+        <?php
+    }
+} else { ?>
+    <div class="alert alert-danger px-2 py-2">
+        <?= $this->translate('Could not basket steps') ?>
+    </div>
+    <?php
+}
+
