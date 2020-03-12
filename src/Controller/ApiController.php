@@ -59,6 +59,19 @@ class ApiController extends CoreEntityController {
         }
     }
 
+    private function tryToGetBasket($sShopSessionID) {
+        $oBasketExists = $this->oTableGateway->fetchAll(false,[
+            'shop_session_id' => $sShopSessionID,
+            'is_archived_idfs' => 0]);
+        if(count($oBasketExists) > 0) {
+            foreach($oBasketExists as $oBasket) {
+                return $oBasket;
+            }
+        } else {
+            throw new \RuntimeException('No open basket with that id');
+        }
+    }
+
     /**
      * Add New Item to Basket
      *
@@ -76,17 +89,25 @@ class ApiController extends CoreEntityController {
         $iItemID = $_REQUEST['shop_item_id'];
         $sItemType = $_REQUEST['shop_item_type'];
         $fItemAmount = $_REQUEST['shop_item_amount'];
+        $fCustomPrice = $_REQUEST['shop_item_customprice'];
+        $sItemComment = $_REQUEST['shop_item_comment'];
         $sShopSessionID = $_REQUEST['shop_session_id'];
+        $iRefID = isset($_REQUEST['shop_item_ref_idfs']) ? (int)$_REQUEST['shop_item_ref_idfs'] : 0;
+        $sRefType = isset($_REQUEST['shop_item_ref_type']) ? $_REQUEST['shop_item_ref_type'] : 'none';
 
         # Check if there is already an open basket for this session
         $oBasket = false;
         try {
-            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
-            if($oBasketExists->shop_session_id != $sShopSessionID) {
-                throw new \RuntimeException('Not really the same basket...');
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
+            if(is_object($oBasketExists)) {
+                if ($oBasketExists->shop_session_id != $sShopSessionID) {
+                    throw new \RuntimeException('Not really the same basket...');
+                }
+                # yes there is
+                $oBasket = $oBasketExists;
+            } else {
+                throw new \RuntimeException('Not valid basket');
             }
-            # yes there is
-            $oBasket = $oBasketExists;
         } catch(\RuntimeException $e) {
             # there is no basket - lets create one
 
@@ -99,7 +120,7 @@ class ApiController extends CoreEntityController {
                 $oNewState = CoreEntityController::$aCoreTables['core-entity-tag']->select([
                     'entity_form_idfs' => 'basket-single',
                     'tag_idfs' => $oStateTag->Tag_ID,
-                    'tag_value' => 'new',
+                    'tag_key' => 'new',
                 ]);
 
                 # only proceed of we have state tag present
@@ -115,7 +136,7 @@ class ApiController extends CoreEntityController {
                         'deliverymethod_idfs' => 0,
                         'paymentmethod_idfs' => 0,
                         'label' => 'New Basket',
-                        'comment' => 'Created by WP Bridge',
+                        'comment' => '',
                         'payment_id' => '',
                         'payment_session_id' => '',
                         'shop_session_id' => $sShopSessionID,
@@ -137,24 +158,75 @@ class ApiController extends CoreEntityController {
         # Only proceed if basket is present
         if($oBasket) {
             $oBasketPosTbl = CoreEntityController::$oServiceManager->get(PositionTable::class);
-            # generate new basket position
-            $oPos = $oBasketPosTbl->generateNew();
-            $aPosData = [
-                'basket_idfs' => $oBasket->getID(),
-                'article_idfs' => $iItemID,
-                'article_type' => $sItemType,
-                'amount' => (float)$fItemAmount,
-                'price' => 0,
-                'comment' => '',
-                'created_by' => 1,
-                'created_date' => date('Y-m-d H:i:s',time()),
-                'modified_by' => 1,
-                'modified_date' => date('Y-m-d H:i:s',time()),
-            ];
+            # if there is no comment - check if we already have to same article in basket
+            $bGenNewPos = true;
+            if($sItemComment == '') {
+                $oSameInBasket = $oBasketPosTbl->fetchAll(false,[
+                    'basket_idfs' => $oBasket->getID(),
+                    'article_idfs' => $iItemID,
+                    'comment' => '',
+                    'ref_idfs' => $iRefID,
+                    'ref_type' => $sRefType,
+                ]);
+                if(count($oSameInBasket) > 0) {
+                    $bGenNewPos = false;
+                    foreach($oSameInBasket as $oSame) {
+                        $iNewAmount = $oSame->amount+(float)$fItemAmount;
+                        $oBasketPosTbl->updateAttribute('amount',$iNewAmount,'Position_ID',$oSame->getID());
 
-            # save to database
-            $oPos->exchangeArray($aPosData);
-            $oBasketPosTbl->saveSingle($oPos);
+                        $this->addBasketStep($oBasket,'basket_updatepos','Update Amount +'.$fItemAmount.' for position '.$oSame->getID(),'Before '.$oSame->amount);
+                        break;
+                    }
+
+                }
+            }
+            $sStepLabel = 'Add '.$fItemAmount.' article';
+            if($bGenNewPos) {
+                switch($sItemType) {
+                    case 'variant':
+                    case 'event':
+                    case 'article':
+                        try {
+                            $oArticleTbl = CoreEntityController::$oServiceManager->get(ArticleTable::class);
+                            $oVariantTbl = CoreEntityController::$oServiceManager->get(VariantTable::class);
+                            if($fCustomPrice == 0) {
+                                $oVar = $oVariantTbl->getSingle($iItemID);
+                                if(is_object($oVar)) {
+                                    $fCustomPrice = $oVar->price;
+                                }
+                                $oBaseArt = $oArticleTbl->getSingle($oVar->article_idfs);
+                                $sStepLabel .= ' '.$oBaseArt->getLabel().': '.$oVar->getLabel();
+                            }
+                        } catch(\RuntimeException $e) {
+                            # error loading tables
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                # generate new basket position
+                $oPos = $oBasketPosTbl->generateNew();
+                $aPosData = [
+                    'basket_idfs' => $oBasket->getID(),
+                    'article_idfs' => $iItemID,
+                    'article_type' => $sItemType,
+                    'ref_idfs' => $iRefID,
+                    'ref_type' => $sRefType,
+                    'amount' => (float)$fItemAmount,
+                    'price' => (float)$fCustomPrice,
+                    'comment' => $sItemComment,
+                    'created_by' => 1,
+                    'created_date' => date('Y-m-d H:i:s', time()),
+                    'modified_by' => 1,
+                    'modified_date' => date('Y-m-d H:i:s', time()),
+                ];
+
+                # save to database
+                $oPos->exchangeArray($aPosData);
+                $oBasketPosTbl->saveSingle($oPos);
+
+                $this->addBasketStep($oBasket,'basket_additem',$sStepLabel,$sItemComment);
+            }
         }
 
         # json response for api
@@ -180,21 +252,32 @@ class ApiController extends CoreEntityController {
         $sShopSessionID = $_REQUEST['shop_session_id'];
 
         try {
-            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
-            if($oBasketExists->shop_session_id != $sShopSessionID) {
-                throw new \RuntimeException('Not really the same basket...');
-            }
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
         } catch(\RuntimeException $e) {
             $aResponse = ['state'=>'success','message'=>'Your Basket is empty'];
             echo json_encode($aResponse);
             return false;
         }
 
+        $aPositions = $this->getBasketPositions($oBasketExists);
+        $aResponse = ['state'=>'success','message'=>'open basket found','basket'=>$oBasketExists,'items'=>$aPositions];
+        echo json_encode($aResponse);
+
+        return false;
+    }
+
+    private function getBasketPositions($oBasketExists) {
         # we have a basket - lets check for positions
         $aPositions = [];
         $oPosTbl = CoreEntityController::$oServiceManager->get(PositionTable::class);
         $oArticleTbl = CoreEntityController::$oServiceManager->get(ArticleTable::class);
         $oVariantTbl = CoreEntityController::$oServiceManager->get(VariantTable::class);
+
+        try {
+            $oEventTbl = CoreEntityController::$oServiceManager->get(\OnePlace\Event\Model\EventTable::class);
+        } catch(\RuntimeException $e) {
+            # event plugin not present
+        }
 
         # attach positions
         $oBasketPositions = $oPosTbl->fetchAll(false,['basket_idfs' => $oBasketExists->getID()]);
@@ -204,6 +287,35 @@ class ApiController extends CoreEntityController {
                     case 'variant':
                         $oPos->oVariant = $oVariantTbl->getSingle($oPos->article_idfs);
                         $oPos->oArticle = $oArticleTbl->getSingle($oPos->oVariant->article_idfs);
+                        $oPos->oArticle->featured_image = '/data/article/'.$oPos->oArticle->getID().'/'.$oPos->oArticle->featured_image;
+                        # check for custom price (used for free amount coupons)
+                        if($oPos->price != 0) {
+                            $oPos->oVariant->price = $oPos->price;
+                        }
+                        # event plugin
+                        if($oPos->ref_idfs != 0) {
+                            switch($oPos->ref_type) {
+                                case 'event':
+                                    if(isset($oEventTbl)) {
+                                        $oPos->article_type = 'event';
+                                        $oPos->oEvent = $oEventTbl->getSingle($oPos->ref_idfs);
+                                        # Event Rerun Plugin Start
+                                        if($oPos->oEvent->root_event_idfs != 0) {
+                                            $oRoot = $oEventTbl->getSingle($oPos->oEvent->root_event_idfs);
+                                            $oPos->oEvent->label = $oRoot->label;
+                                            $oPos->oEvent->excerpt = $oRoot->excerpt;
+                                            $oPos->oEvent->featured_image = $oRoot->featured_image;
+                                            $oPos->oEvent->description = $oRoot->description;
+                                            $oPos->oEvent->featured_image = '/data/event/'.$oRoot->getID().'/'.$oPos->oEvent->featured_image;
+                                        } else {
+                                            $oPos->oEvent->featured_image = '/data/event/'.$oPos->oEvent->getID().'/'.$oPos->oEvent->featured_image;
+                                        }
+                                    }
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
                         break;
                     default:
                         break;
@@ -211,10 +323,8 @@ class ApiController extends CoreEntityController {
                 $aPositions[] = $oPos;
             }
         }
-        $aResponse = ['state'=>'success','message'=>'open basket found','basket'=>$oBasketExists,'items'=>$aPositions];
-        echo json_encode($aResponse);
 
-        return false;
+        return $aPositions;
     }
 
     /**
@@ -242,17 +352,35 @@ class ApiController extends CoreEntityController {
             ]);
             if(count($oDeliveryMethodsDB) > 0) {
                 foreach($oDeliveryMethodsDB as $oDel) {
-                    $aDeliveryMethods[] = (object)['id' => $oDel->Entitytag_ID,'label' => $oDel->tag_value];
+                    $aDeliveryMethods[] = (object)[
+                        'id' => $oDel->Entitytag_ID,
+                        'label' => $oDel->tag_value,
+                        'gateway' => $oDel->tag_key,
+                    ];
+                }
+            }
+        }
+
+        # check if we have contact salutations in database
+        $oTagSalu = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'salutation']);
+        $aContactSalutations = [];
+        if(count($oTagSalu) > 0) {
+            $oTagSalu = $oTagSalu->current();
+
+            $oContactSalutsDB = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'entity_form_idfs' => 'contact-single',
+                'tag_idfs' => $oTagSalu->Tag_ID,
+            ]);
+            if(count($oContactSalutsDB) > 0) {
+                foreach($oContactSalutsDB as $oSal) {
+                    $aContactSalutations[] = (object)['id' => $oSal->Entitytag_ID,'label' => $oSal->tag_value];
                 }
             }
         }
 
         # get open basket
         try {
-            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
-            if($oBasketExists->shop_session_id != $sShopSessionID) {
-                throw new \RuntimeException('Not really the same basket...');
-            }
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
         } catch(\RuntimeException $e) {
             $aResponse = ['state'=>'error','message'=>'No matching open basket found'];
             echo json_encode($aResponse);
@@ -269,15 +397,15 @@ class ApiController extends CoreEntityController {
             try {
                 $oContactExists = $oContactTbl->getSingle($oBasketExists->contact_idfs);
             } catch (\RuntimeException $e) {
-                # this should actually not happen at all
-                $this->aPluginTables['basket-step']->insert([
-                    'basket_idfs' => $oBasketExists->getID(),
-                    'label' => 'Checkout started',
-                    'step_key' => 'checkout_init',
-                    'comment' => '(contact not found) - init again',
-                    'date_created' => date('Y-m-d H:i:s',time()),
-                ]);
-                $aResponse = ['state' => 'success', 'message' => 'checkout started', 'basket' => $oBasketExists,'deliverymethods' => $aDeliveryMethods];
+                $this->addBasketStep($oBasketExists,'checkout_init','Checkout stared','(contact not found) - init again');
+
+                $aResponse = [
+                    'state' => 'success',
+                    'message' => 'checkout started',
+                    'basket' => $oBasketExists,
+                    'deliverymethods' => $aDeliveryMethods,
+                    'salutations' => $aContactSalutations,
+                ];
                 echo json_encode($aResponse);
 
                 return false;
@@ -287,29 +415,29 @@ class ApiController extends CoreEntityController {
             $oAddress = $oAddressTbl->getSingle($oContactExists->getID(),'contact_idfs');
             $oContactExists->address = $oAddress;
 
-            # add step for repeat
-            $this->aPluginTables['basket-step']->insert([
-                'basket_idfs' => $oBasketExists->getID(),
-                'label' => 'Checkout repeat',
-                'step_key' => 'checkout_repeat',
-                'comment' => '',
-                'date_created' => date('Y-m-d H:i:s',time()),
-            ]);
+            $this->addBasketStep($oBasketExists,'checkout_repeat','Checkout repeat','');
 
-            $aResponse = ['state'=>'success','message'=>'checkout started again','basket'=>$oBasketExists,'contact'=>$oContactExists,'deliverymethods' => $aDeliveryMethods];
+            $aResponse = [
+                'state'=>'success',
+                'message'=>'checkout started again',
+                'basket'=>$oBasketExists,
+                'contact'=>$oContactExists,
+                'deliverymethods' => $aDeliveryMethods,
+                'salutations' => $aContactSalutations
+            ];
             echo json_encode($aResponse);
 
             return false;
         } else {
-            # should be first time we start checkout or at least no data was provided in further tries
-            $this->aPluginTables['basket-step']->insert([
-                'basket_idfs' => $oBasketExists->getID(),
-                'label' => 'Checkout started',
-                'step_key' => 'checkout_init',
-                'comment' => '',
-                'date_created' => date('Y-m-d H:i:s',time()),
-            ]);
-            $aResponse = ['state' => 'success', 'message' => 'checkout started', 'basket' => $oBasketExists,'deliverymethods' => $aDeliveryMethods];
+            $this->addBasketStep($oBasketExists,'checkout_init','Checkout started','');
+
+            $aResponse = [
+                'state' => 'success',
+                'message' => 'checkout started',
+                'basket' => $oBasketExists,
+                'deliverymethods' => $aDeliveryMethods,
+                'salutations' => $aContactSalutations
+            ];
             echo json_encode($aResponse);
 
             return false;
@@ -332,10 +460,7 @@ class ApiController extends CoreEntityController {
         $sShopSessionID = $_REQUEST['shop_session_id'];
 
         try {
-            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
-            if($oBasketExists->shop_session_id != $sShopSessionID) {
-                throw new \RuntimeException('Not really the same basket...');
-            }
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
         } catch(\RuntimeException $e) {
             $aResponse = ['state'=>'error','message'=>'No matching open basket found'];
             echo json_encode($aResponse);
@@ -348,14 +473,7 @@ class ApiController extends CoreEntityController {
         $aContactData = [];
         # check if we come from last step (address form)
         if(isset($_REQUEST['email'])) {
-            # payment selection init
-            $this->aPluginTables['basket-step']->insert([
-                'basket_idfs' => $oBasketExists->getID(),
-                'label' => 'Payment Selection',
-                'step_key' => 'payselect_init',
-                'comment' => '',
-                'date_created' => date('Y-m-d H:i:s',time()),
-            ]);
+            $this->addBasketStep($oBasketExists,'payselect_init','Payment Selection','');
 
             $aContactData['email_private'] = $_REQUEST['email'];
             $aContactData['firstname'] = $_REQUEST['firstname'];
@@ -365,6 +483,7 @@ class ApiController extends CoreEntityController {
 
             try {
                 $oContactExists = $oContactTbl->getSingle($aContactData['email_private'],'email_private');
+                $iContactID = $oContactExists->getID();
             } catch(\RuntimeException $e) {
                 # create a new contact
                 $oNewContact = $oContactTbl->generateNew();
@@ -382,11 +501,14 @@ class ApiController extends CoreEntityController {
                 $oNewAddress = $oAddressTbl->generateNew();
                 $oNewAddress->exchangeArray($aAddressData);
                 $iAddressID = $oAddressTbl->saveSingle($oNewAddress);
-
-                $this->oTableGateway->updateAttribute('contact_idfs',$iContactID,'Basket_ID',$oBasketExists->getID());
             }
+            $this->oTableGateway->updateAttribute('contact_idfs',$iContactID,'Basket_ID',$oBasketExists->getID());
         } else {
             $oContactExists = $oContactTbl->getSingle($oBasketExists->contact_idfs);
+        }
+
+        if(isset($_REQUEST['comment'])) {
+            $this->oTableGateway->updateAttribute('comment', $_REQUEST['comment'], 'Basket_ID', $oBasketExists->getID());
         }
 
         if(isset($_REQUEST['deliverymethod'])) {
@@ -408,6 +530,7 @@ class ApiController extends CoreEntityController {
                     $aPaymentMethods[] = (object)[
                         'id' => $oDel->Entitytag_ID,
                         'label' => $oDel->tag_value,
+                        'gateway' => $oDel->tag_key,
                         'icon' => $oDel->tag_icon,
                     ];
                 }
@@ -429,13 +552,7 @@ class ApiController extends CoreEntityController {
                     'label' => $oPaymentMethod->tag_value,
                     'icon' => $oPaymentMethod->tag_icon
                 ];
-                $this->aPluginTables['basket-step']->insert([
-                    'basket_idfs' => $oBasketExists->getID(),
-                    'label' => 'Payment Selection',
-                    'step_key' => 'payselect_repeat',
-                    'comment' => 'Current Method '.$oPaymentMethod->tag_value,
-                    'date_created' => date('Y-m-d H:i:s',time()),
-                ]);
+                $this->addBasketStep($oBasketExists,'payselect_repeat','Payment Selection','Current Method '.$oPaymentMethod->tag_value);
             }
         }
 
@@ -468,10 +585,7 @@ class ApiController extends CoreEntityController {
          * Load Basket
          */
         try {
-            $oBasketExists = $this->oTableGateway->getSingle($sShopSessionID,'shop_session_id');
-            if($oBasketExists->shop_session_id != $sShopSessionID) {
-                throw new \RuntimeException('Not really the same basket...');
-            }
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
         } catch(\RuntimeException $e) {
             $aResponse = ['state' => 'error','message' => 'No matching open basket found'];
             echo json_encode($aResponse);
@@ -509,7 +623,7 @@ class ApiController extends CoreEntityController {
         /**
          * Load Payment Method
          */
-        $aPay = ['id' => 0,'label' => '-','icon' => ''];
+        $aPay = ['id' => 0,'label' => '-','icon' => '','gateway' => 'none'];
         if($iPaymentMethodID != 0) {
             $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
                 'Entitytag_ID' => $iPaymentMethodID,
@@ -519,9 +633,98 @@ class ApiController extends CoreEntityController {
                 $aPay = [
                     'id' => $oPaymentMethod->Entitytag_ID,
                     'label' => $oPaymentMethod->tag_value,
+                    'gateway' => $oPaymentMethod->tag_key,
                     'icon' => $oPaymentMethod->tag_icon
                 ];
             }
+        }
+
+        /**
+         * Load Delivery Method
+         */
+        $aDelivery = ['id' => 0,'label' => '-','icon' => ''];
+        $oDeliveryMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+            'Entitytag_ID' => $oBasketExists->deliverymethod_idfs,
+        ]);
+        if(count($oDeliveryMethod) > 0) {
+            $oDeliveryMethod = $oDeliveryMethod->current();
+            $aDelivery = [
+                'id' => $oDeliveryMethod->Entitytag_ID,
+                'label' => $oDeliveryMethod->tag_value,
+                'gateway' => $oDeliveryMethod->tag_key,
+                'icon' => $oDeliveryMethod->tag_icon
+            ];
+        }
+
+        $aPositions = $this->getBasketPositions($oBasketExists);
+
+        $this->addBasketStep($oBasketExists,'confirm_order','Confirm Order','Payment Method '.$aPay['label'].', Delivery Method: '.$aDelivery['label'].', Positions: '.count($aPositions));
+
+        $aResponse = [
+            'state' => 'success',
+            'message' => 'paymentmethod saved',
+            'basket' => $oBasketExists,
+            'paymentmethod' => $aPay,
+            'deliverymethod' => $aDelivery,
+            'contact' => $oContactExists,
+            'positions' => $aPositions,
+        ];
+        echo json_encode($aResponse);
+
+        return false;
+    }
+
+    public function initpaymentAction() {
+        $this->layout('layout/json');
+
+        $sShopSessionID = $_REQUEST['shop_session_id'];
+
+        /**
+         * Load Basket
+         */
+        try {
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
+        } catch(\RuntimeException $e) {
+            $aResponse = ['state' => 'error','message' => 'No matching open basket found'];
+            echo json_encode($aResponse);
+            return false;
+        }
+
+        /**
+         * Load Contact
+         */
+        $oContactExists = [];
+        if($oBasketExists->contact_idfs != 0) {
+            $oContactTbl = CoreEntityController::$oServiceManager->get(ContactTable::class);
+            $oAddressTbl = CoreEntityController::$oServiceManager->get(AddressTable::class);
+            try {
+                $oContactExists = $oContactTbl->getSingle($oBasketExists->contact_idfs);
+            } catch (\RuntimeException $e) {
+                $aResponse = ['state' => 'success', 'message' => 'checkout started', 'basket' => $oBasketExists,'deliverymethods' => $aDeliveryMethods];
+                echo json_encode($aResponse);
+
+                return false;
+            }
+
+            $oAddress = $oAddressTbl->getSingle($oContactExists->getID(),'contact_idfs');
+            $oContactExists->address = $oAddress;
+        }
+
+        /**
+         * Load Payment Method
+         */
+        $aPay = ['id' => 0,'label' => '-','icon' => '','gateway' => 'invalid'];
+        $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+            'Entitytag_ID' => $oBasketExists->paymentmethod_idfs,
+        ]);
+        if (count($oPaymentMethod) > 0) {
+            $oPaymentMethod = $oPaymentMethod->current();
+            $aPay = [
+                'id' => $oPaymentMethod->Entitytag_ID,
+                'label' => $oPaymentMethod->tag_value,
+                'gateway' => $oPaymentMethod->tag_key,
+                'icon' => $oPaymentMethod->tag_icon
+            ];
         }
 
         /**
@@ -540,37 +743,44 @@ class ApiController extends CoreEntityController {
             ];
         }
 
-        $aPositions = [];
-        $oPosTbl = CoreEntityController::$oServiceManager->get(PositionTable::class);
-        $oArticleTbl = CoreEntityController::$oServiceManager->get(ArticleTable::class);
-        $oVariantTbl = CoreEntityController::$oServiceManager->get(VariantTable::class);
+        $aPositions = $this->getBasketPositions($oBasketExists);
 
-        $oBasketPositions = $oPosTbl->fetchAll(false,['basket_idfs' => $oBasketExists->getID()]);
-        if(count($oBasketPositions) > 0) {
-            foreach($oBasketPositions as $oPos) {
-                switch($oPos->article_type) {
-                    case 'variant':
-                        $oPos->oVariant = $oVariantTbl->getSingle($oPos->article_idfs);
-                        $oPos->oArticle = $oArticleTbl->getSingle($oPos->oVariant->article_idfs);
-                        break;
-                    default:
-                        break;
+        $this->addBasketStep($oBasketExists,'payment_start','Payment Start','Payment Method '.$aPay['label'].',Positions: '.count($aPositions));
+
+        switch($aPay['gateway']) {
+            case 'prepay':
+                $this->addBasketStep($oBasketExists,'basket_close','Create Order - Close Basket','Done '.$aPay['label'].',Positions: '.count($aPositions));
+                $this->closeBasketAndCreateOrder($oBasketExists);
+                /**
+                # Get State Tag
+                $oStateTag = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'state']);
+                if(count($oStateTag) > 0) {
+                    $oStateTag = $oStateTag->current();
+
+                    # Get Basket "done" Entity State Tag
+                    $oDoneState = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                        'entity_form_idfs' => 'basket-single',
+                        'tag_idfs' => $oStateTag->Tag_ID,
+                        'tag_key' => 'done',
+                    ]);
+
+                    # only proceed of we have state tag present
+                    if (count($oDoneState) > 0) {
+                        $oDoneState = $oDoneState->current();
+                        $this->oTableGateway->updateAttribute('state_idfs', $oDoneState->Entitytag_ID, 'Basket_ID', $oBasketExists->getID());
+                    }
                 }
-                $aPositions[] = $oPos;
-            }
+                # archive basket
+                $this->oTableGateway->updateAttribute('is_archived_idfs', 1, 'Basket_ID', $oBasketExists->getID());
+                // Directly create order and close basket**/
+                break;
+            default:
+                break;
         }
-
-        $this->aPluginTables['basket-step']->insert([
-            'basket_idfs' => $oBasketExists->getID(),
-            'label' => 'Confirm Order',
-            'step_key' => 'confirm_order',
-            'comment' => 'Payment Method '.$aPay['label'].', Delivery Method: '.$aDelivery['label'].', Positions: '.count($aPositions),
-            'date_created' => date('Y-m-d H:i:s',time()),
-        ]);
 
         $aResponse = [
             'state' => 'success',
-            'message' => 'paymentmethod saved',
+            'message' => 'payment started',
             'basket' => $oBasketExists,
             'paymentmethod' => $aPay,
             'deliverymethod' => $aDelivery,
@@ -580,5 +790,272 @@ class ApiController extends CoreEntityController {
         echo json_encode($aResponse);
 
         return false;
+    }
+
+    public function removeAction() {
+        $this->layout('layout/json');
+
+        $iPosID = $_REQUEST['position_id'];
+        $sShopSessionID = $_REQUEST['shop_session_id'];
+
+        /**
+         * Load Basket
+         */
+        try {
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
+        } catch(\RuntimeException $e) {
+            $aResponse = ['state' => 'error','message' => 'No matching open basket found'];
+            echo json_encode($aResponse);
+            return false;
+        }
+
+        $this->aPluginTables['basket-position']->delete([
+            'Position_ID' => $iPosID,
+        ]);
+
+        $this->addBasketStep($oBasketExists,'item_remove','Remove Position','Remove Item '.$iPosID);
+
+        $aPositions = $this->getBasketPositions($oBasketExists);
+        $aResponse = [
+            'state' => 'success',
+            'message' => 'position removed',
+            'basket' => $oBasketExists,
+            'items' => $aPositions,
+        ];
+        echo json_encode($aResponse);
+
+        return false;
+    }
+
+    public function updateAction() {
+        $this->layout('layout/json');
+
+        $iPosID = $_REQUEST['position_id'];
+        $fAmount = (float)$_REQUEST['position_amount'];
+        $sShopSessionID = $_REQUEST['shop_session_id'];
+
+        /**
+         * Load Basket
+         */
+        try {
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
+        } catch(\RuntimeException $e) {
+            $aResponse = ['state' => 'error','message' => 'No matching open basket found'];
+            echo json_encode($aResponse);
+            return false;
+        }
+
+        $this->aPluginTables['basket-position']->update([
+            'amount' => $fAmount,
+        ],[
+            'Position_ID' => $iPosID,
+        ]);
+
+        $this->addBasketStep($oBasketExists,'item_update','Update Position','New Amount '.$fAmount.' for Item '.$iPosID);
+
+        $aPositions = $this->getBasketPositions($oBasketExists);
+        $aResponse = [
+            'state' => 'success',
+            'message' => 'position updated',
+            'basket' => $oBasketExists,
+            'items' => $aPositions,
+        ];
+        echo json_encode($aResponse);
+
+        return false;
+    }
+
+    public function stripeAction() {
+        $this->layout('layout/json');
+
+        $sShopSessionID = $_REQUEST['shop_session_id'];
+        $sSessionID = $_REQUEST['session_id'];
+        $sPaymentID = '';
+        if(isset($_REQUEST['payment_id'])) {
+            $sPaymentID = $_REQUEST['payment_id'];
+        }
+        $sPayState = 'init';
+        if(isset($_REQUEST['payment_state'])) {
+            if($_REQUEST['payment_state'] == 'done') {
+                $sPayState = 'done';
+            }
+        }
+
+        /**
+         * Load Basket
+         */
+        try {
+            $oBasketExists = $this->tryToGetBasket($sShopSessionID);
+        } catch(\RuntimeException $e) {
+            $aResponse = ['state' => 'error','message' => 'No matching open basket found'];
+            echo json_encode($aResponse);
+            return false;
+        }
+
+        $aPositions = $this->getBasketPositions($oBasketExists);
+
+        switch($sPayState) {
+            case 'done':
+                if($sSessionID == $oBasketExists->payment_session_id) {
+                    $this->oTableGateway->updateAttribute('payment_received', date('Y-m-d H:i:s', time()), 'Basket_ID', $oBasketExists->getID());
+
+                    $this->addBasketStep($oBasketExists,'basket_close','Create Order - Close Basket','Done Stripe,Positions: ' . count($aPositions));
+
+                    /// here
+                    $this->closeBasketAndCreateOrder($oBasketExists,date('Y-m-d H:i:s', time()));
+                    ///
+                    $aResponse = [
+                        'state' => 'success',
+                        'message' => 'payment finished',
+                        'basket' => $oBasketExists,
+                    ];
+                } else {
+                    $aResponse = [
+                        'state' => 'error',
+                        'message' => 'invalid payment id',
+                        'basket' => $oBasketExists,
+                    ];
+                }
+                break;
+            case 'init':
+                $this->oTableGateway->updateAttribute('payment_gateway','stripe','Basket_ID',$oBasketExists->getID());
+                $this->oTableGateway->updateAttribute('payment_id',$sPaymentID,'Basket_ID',$oBasketExists->getID());
+                $this->oTableGateway->updateAttribute('payment_session_id',$sSessionID,'Basket_ID',$oBasketExists->getID());
+                $this->oTableGateway->updateAttribute('payment_started',date('Y-m-d H:i:s',time()),'Basket_ID',$oBasketExists->getID());
+
+                $aResponse = [
+                    'state' => 'success',
+                    'message' => 'payment started',
+                    'basket' => $oBasketExists,
+                ];
+                break;
+            default:
+                break;
+        }
+
+        echo json_encode($aResponse);
+
+        return false;
+    }
+
+    private function addBasketStep($oBasket,$sStepKey,$sMessage,$sComment) {
+        $this->aPluginTables['basket-step']->insert([
+            'basket_idfs' => $oBasket->getID(),
+            'label' => $sMessage,
+            'step_key' => $sStepKey,
+            'comment' => $sComment,
+            'date_created' => date('Y-m-d H:i:s',time()),
+        ]);
+        $this->oTableGateway->updateAttribute('modified_date', date('Y-m-d H:i:s',time()), 'Basket_ID', $oBasket->getID());
+    }
+
+    private function closeBasketAndCreateOrder($oBasket,$sPaymentReceived = '0000-00-00 00:00:00') {
+        # Get State Tag
+        $oStateTag = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'state']);
+        if (count($oStateTag) > 0) {
+            $oStateTag = $oStateTag->current();
+
+            # Get Basket "done" Entity State Tag
+            $oDoneState = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'entity_form_idfs' => 'basket-single',
+                'tag_idfs' => $oStateTag->Tag_ID,
+                'tag_key' => 'done',
+            ]);
+
+            # only proceed of we have state tag present
+            if (count($oDoneState) > 0) {
+                $oDoneState = $oDoneState->current();
+                $this->oTableGateway->updateAttribute('state_idfs', $oDoneState->Entitytag_ID, 'Basket_ID', $oBasket->getID());
+            }
+        }
+        # archive basket
+        $this->oTableGateway->updateAttribute('is_archived_idfs', 1, 'Basket_ID', $oBasket->getID());
+
+        $oNewJob = $this->aPluginTables['job']->generateNew();
+
+        # Get Job "new" Entity State Tag
+        $oNewState = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+            'entity_form_idfs' => 'job-single',
+            'tag_idfs' => $oStateTag->Tag_ID,
+            'tag_key' => 'new',
+        ]);
+        if(count($oNewState)) {
+            $oNewState = $oNewState->current();
+            $aDelivery = false;
+            $oDeliveryMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'Entitytag_ID' => $oBasket->deliverymethod_idfs,
+            ]);
+            if(count($oDeliveryMethod) > 0) {
+                $oDeliveryMethod = $oDeliveryMethod->current();
+                $aDelivery = [
+                    'id' => $oDeliveryMethod->Entitytag_ID,
+                    'label' => $oDeliveryMethod->tag_value,
+                    'gateway' => $oDeliveryMethod->tag_key,
+                    'icon' => $oDeliveryMethod->tag_icon
+                ];
+            }
+
+            $aJobData = [
+                'contact_idfs' => $oBasket->contact_idfs,
+                'state_idfs' => $oNewState->Entitytag_ID,
+                'paymentmethod_idfs' => $oBasket->paymentmethod_idfs,
+                'payment_session_id' => $oBasket->payment_session_id,
+                'payment_started' => $oBasket->payment_started,
+                'payment_received' => $sPaymentReceived,
+                'payment_id' => $oBasket->payment_id,
+                'deliverymethod_idfs' => $oBasket->deliverymethod_idfs,
+                'label' => 'Shop Bestellung vom '.date('d.m.Y H:i',time()),
+                'date' => date('Y-m-d H:i:s',time()),
+                'discount' => 0,
+                'description' => 'Bestellung aus dem Shop. Kommentar des Kunden: '.$oBasket->comment,
+                'created_by' => 1,
+                'created_date' => date('Y-m-d H:i:s',time()),
+                'modified_by' => 1,
+                'modified_date' => date('Y-m-d H:i:s',time())
+            ];
+            $oNewJob->exchangeArray($aJobData);
+            $iNewJobID = $this->aPluginTables['job']->saveSingle($oNewJob);
+            $this->oTableGateway->updateAttribute('job_idfs',$iNewJobID,'Basket_ID',$oBasket->getID());
+
+            $aPositions = $this->getBasketPositions($oBasket);
+            $fTotal = 0;
+            if(count($aPositions) > 0) {
+                $iSortID = 0;
+                foreach($aPositions as $oPos) {
+                    $this->aPluginTables['job-position']->insert([
+                        'job_idfs' => $iNewJobID,
+                        'article_idfs' => $oPos->article_idfs,
+                        'ref_idfs' => $oPos->ref_idfs,
+                        'ref_type' => $oPos->ref_type,
+                        'type' => $oPos->article_type,
+                        'sort_id' => $iSortID,
+                        'amount' => $oPos->amount,
+                        'price' => $oPos->price,
+                        'discount' => 0,
+                        'discount_type' => 'percent',
+                        'description' => $oPos->comment
+                    ]);
+                    $fTotal+=($oPos->amount*$oPos->price);
+                    $iSortID++;
+                }
+            }
+            if($fTotal <= 100 && $aDelivery['gateway'] == 'mail') {
+                $this->aPluginTables['job-position']->insert([
+                    'job_idfs' => $iNewJobID,
+                    'article_idfs' => 0,
+                    'ref_idfs' => 0,
+                    'ref_type' => 'none',
+                    'type' => 'custom',
+                    'sort_id' => $iSortID,
+                    'amount' => 1,
+                    'price' => 2.5,
+                    'discount' => 0,
+                    'discount_type' => 'percent',
+                    'description' => 'Lieferkosten Postversand unter 100 €'
+                ]);
+            }
+        } else {
+            // could not find state "new" tag for job
+        }
     }
 }

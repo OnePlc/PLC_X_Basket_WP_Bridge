@@ -23,6 +23,7 @@ use Laminas\Db\Adapter\AdapterInterface;
 use Laminas\EventManager\EventInterface as Event;
 use Laminas\ModuleManager\ModuleManager;
 use OnePlace\Basket\Model\BasketTable;
+use OnePlace\Job\Model\JobTable;
 
 
 class Module {
@@ -67,6 +68,9 @@ class Module {
                     $oDbAdapter = $container->get(AdapterInterface::class);
                     $tableGateway = $container->get(BasketTable::class);
                     $oBasketStepTbl = new TableGateway('basket_step', $oDbAdapter);
+                    $oBasketPosTbl = new TableGateway('basket_position', $oDbAdapter);
+                    $oJobTbl = $container->get(JobTable::class);
+                    $oJobPosTbl = new TableGateway('job_position', $oDbAdapter);
 
                     # hook start
                     # hook end
@@ -74,7 +78,12 @@ class Module {
                         $oDbAdapter,
                         $tableGateway,
                         $container,
-                        ['basket-step' => $oBasketStepTbl]
+                        [
+                            'basket-step' => $oBasketStepTbl,
+                            'basket-position' => $oBasketPosTbl,
+                            'job' => $oJobTbl,
+                            'job-position' => $oJobPosTbl,
+                        ]
                     );
                 },
                 Controller\InstallController::class => function($container) {
