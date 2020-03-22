@@ -775,6 +775,7 @@ class ApiController extends CoreEntityController {
         switch($aPay['gateway']) {
             case 'prepay':
             case 'instore':
+            case 'paypal':
                 $this->addBasketStep($oBasketExists,'basket_close','Create Order - Close Basket','Done '.$aPay['label'].',Positions: '.count($aPositions));
                 $this->closeBasketAndCreateOrder($oBasketExists);
                 /**
@@ -1021,6 +1022,20 @@ class ApiController extends CoreEntityController {
                 ];
             }
 
+            $aPayment = false;
+            $oPaymentMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'Entitytag_ID' => $oBasket->paymentmethod_idfs,
+            ]);
+            if(count($oPaymentMethod) > 0) {
+                $oPaymentMethod = $oPaymentMethod->current();
+                $aPayment = [
+                    'id' => $oPaymentMethod->Entitytag_ID,
+                    'label' => $oPaymentMethod->tag_value,
+                    'gateway' => $oPaymentMethod->tag_key,
+                    'icon' => $oPaymentMethod->tag_icon
+                ];
+            }
+
             $aJobData = [
                 'contact_idfs' => $oBasket->contact_idfs,
                 'state_idfs' => $oNewState->Entitytag_ID,
@@ -1044,10 +1059,31 @@ class ApiController extends CoreEntityController {
             $this->oTableGateway->updateAttribute('job_idfs',$iNewJobID,'Basket_ID',$oBasket->getID());
 
             $aPositions = $this->getBasketPositions($oBasket);
+            $sPosHtml = '';
             $fTotal = 0;
             if(count($aPositions) > 0) {
                 $iSortID = 0;
                 foreach($aPositions as $oPos) {
+                    $sHtmlLabel = '-';
+                    switch($oPos->article_type) {
+                        case 'article':
+                            $sHtmlLabel = $oPos->oArticle->label;
+                            break;
+                        case 'variant':
+                            $sHtmlLabel = $oPos->oArticle->label.': '.$oPos->oVariant->label;
+                            break;
+                        case 'event':
+                            $sHtmlLabel = $oPos->oEvent->label.': '.$oPos->oVariant->label;
+                            break;
+                        default:
+                            break;
+                    }
+                    $sPosHtml .= '<tr>';
+                    $sPosHtml .= '<td>'.$sHtmlLabel.'</td>';
+                    $sPosHtml .= '<td>'.$oPos->amount.'</td>';
+                    $sPosHtml .= '<td>'.number_format((float)$oPos->price,2,',','.').' €</td>';
+                    $sPosHtml .= '<td>'.$oPos->comment.'</td></tr>';
+
                     $this->aPluginTables['job-position']->insert([
                         'job_idfs' => $iNewJobID,
                         'article_idfs' => $oPos->article_idfs,
@@ -1080,6 +1116,40 @@ class ApiController extends CoreEntityController {
                     'description' => 'Lieferkosten Postversand unter 100 €'
                 ]);
             }
+
+            $oContactTbl = CoreEntityController::$oServiceManager->get(ContactTable::class);
+            $oAddressTbl = CoreEntityController::$oServiceManager->get(AddressTable::class);
+            try {
+                $oContact = $oContactTbl->getSingle($oBasket->contact_idfs);
+            } catch (\RuntimeException $e) {
+
+            }
+
+            if(isset($oContact)) {
+                $oAddress = $oAddressTbl->getSingle($oContact->getID(),'contact_idfs');
+                $oContact->address = $oAddress;
+
+                $sEmail = $aPayment['gateway'];
+                if($aDelivery['gateway'] == 'pickup') {
+                    $sEmail = 'instore';
+                }
+
+                $this->sendEmail('email/shop/'.$sEmail,[
+                    'sInstallInfo' => CoreEntityController::$aGlobalSettings['shop-email-subject-receipt'],
+                    'sContactName' => $oContact->getLabel(),
+                    'sContactEmail' => $oContact->getTextField('email_private'),
+                    'sContactPhone' => $oContact->getTextField('phone_private'),
+                    'sContactAddr' => $oContact->address->street,
+                    'sOrderComment' => $oBasket->comment,
+                    'sPaymentMethod' => $aPayment['label'],
+                    'sDeliveryMethod' => $aDelivery['label'],
+                    'oOrderPositions' => $sPosHtml,
+                    'fOrderTotal' => $fTotal,
+                    'sLogoPath' => 'https://schwitzers.onep.lc/img/logo.png',
+                ],$oContact->email_private,$oContact->getLabel(),CoreEntityController::$aGlobalSettings['shop-email-subject-receipt']);
+            }
+
+
         } else {
             // could not find state "new" tag for job
         }
