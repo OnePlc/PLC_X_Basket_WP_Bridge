@@ -61,7 +61,7 @@ class ApiController extends CoreEntityController {
 
     private function tryToGetBasket($sShopSessionID) {
         $oBasketExists = $this->oTableGateway->fetchAll(false,[
-            'shop_session_id' => $sShopSessionID,
+            'shop_session_id-like' => $sShopSessionID,
             'is_archived_idfs' => 0]);
         if(count($oBasketExists) > 0) {
             foreach($oBasketExists as $oBasket) {
@@ -105,6 +105,7 @@ class ApiController extends CoreEntityController {
                 }
                 # yes there is
                 $oBasket = $oBasketExists;
+                var_dump($oBasket);
             } else {
                 throw new \RuntimeException('Not valid basket');
             }
@@ -260,7 +261,13 @@ class ApiController extends CoreEntityController {
         }
 
         $aPositions = $this->getBasketPositions($oBasketExists);
-        $aResponse = ['state'=>'success','message'=>'open basket found','basket'=>$oBasketExists,'items'=>$aPositions];
+        $iAmount = 0;
+        if(count($aPositions) > 0) {
+            foreach($aPositions as $oPos) {
+                $iAmount+=$oPos->amount;
+            }
+        }
+        $aResponse = ['state'=>'success','message'=>'open basket found','basket'=>$oBasketExists,'items'=>$aPositions,'amount'=>$iAmount];
         echo json_encode($aResponse);
 
         return false;
@@ -355,6 +362,7 @@ class ApiController extends CoreEntityController {
                     $aDeliveryMethods[] = (object)[
                         'id' => $oDel->Entitytag_ID,
                         'label' => $oDel->tag_value,
+                        'icon' => $oDel->tag_icon,
                         'gateway' => $oDel->tag_key,
                     ];
                 }
@@ -511,9 +519,25 @@ class ApiController extends CoreEntityController {
             $this->oTableGateway->updateAttribute('comment', $_REQUEST['comment'], 'Basket_ID', $oBasketExists->getID());
         }
 
+        /**
+         * Load Delivery Method
+         */
+        $aDelivery = ['id' => 0,'label' => '-','icon' => ''];
         if(isset($_REQUEST['deliverymethod'])) {
             $iDeliveryMethodID = $_REQUEST['deliverymethod'];
             $this->oTableGateway->updateAttribute('deliverymethod_idfs', $iDeliveryMethodID, 'Basket_ID', $oBasketExists->getID());
+            $oDeliveryMethod = CoreEntityController::$aCoreTables['core-entity-tag']->select([
+                'Entitytag_ID' => $iDeliveryMethodID,
+            ]);
+            if(count($oDeliveryMethod) > 0) {
+                $oDeliveryMethod = $oDeliveryMethod->current();
+                $aDelivery = [
+                    'id' => $oDeliveryMethod->Entitytag_ID,
+                    'label' => $oDeliveryMethod->tag_value,
+                    'gateway' => $oDeliveryMethod->tag_key,
+                    'icon' => $oDeliveryMethod->tag_icon
+                ];
+            }
         }
 
         $oTagDelMet = CoreEntityController::$aCoreTables['core-tag']->select(['tag_key' => 'paymentmethod']);
@@ -562,6 +586,7 @@ class ApiController extends CoreEntityController {
             'message' => 'contact saved',
             'basket' => $oBasketExists,
             'contact' => $oContactExists,
+            'deliverymethod' => $aDelivery,
             'paymentmethods' => $aPaymentMethods,
             'paymentmethodselected' => $aPay,
         ];
@@ -749,6 +774,7 @@ class ApiController extends CoreEntityController {
 
         switch($aPay['gateway']) {
             case 'prepay':
+            case 'instore':
                 $this->addBasketStep($oBasketExists,'basket_close','Create Order - Close Basket','Done '.$aPay['label'].',Positions: '.count($aPositions));
                 $this->closeBasketAndCreateOrder($oBasketExists);
                 /**
